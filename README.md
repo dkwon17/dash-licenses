@@ -9,7 +9,10 @@ It's container wrapper for (The Eclipse Dash License Tool)[https://github.com/ec
 ## Quick start
 
 ```sh
-docker run -i -v ${PWD}/yarn.lock:/home/workspace/yarn.lock  -v ${PWD}/.deps:/home/workspace/.deps  olexii4dockerid/license-tool:next /bin/bash << COMMANDS
-chown -rw $(id -u):$(id -u) /home/workspace/.deps
-COMMANDS
+$ ./build.sh
+```
+
+## Running
+```sh
+docker run  --rm -i -t -v ${PWD}/yarn.lock:/home/workspace/yarn.lock -v ${PWD}/package.json:/home/workspace/package.json -v ${PWD}/.deps:/home/workspace/.deps  docker.io/olexii4dockerid/license-tool:next
 ```
