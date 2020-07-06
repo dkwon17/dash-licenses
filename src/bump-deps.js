@@ -15,15 +15,15 @@ const { writeFileSync, existsSync, readFileSync } = require('fs');
 
 // update depsMap
 function parseFileData(fileData) {
-  const pattern = /^(npm\/npmjs\/(-\/)?)?([^,^ ]+)\/([0-9].[0-9].[0-9]), ([^,]+), approved, (\w+)$/gm;
+  const pattern = /^npm\/npmjs\/(-\/)?([^,]+)\/([0-9.]+), ([^,]+)?, approved, (\w+)$/gm;
 
   const depsMap = new Map();
   let result;
   while ((result = pattern.exec(fileData)) !== null) {
-    const key = `${result[3]}@${result[4]}`;
+    const key = `${result[2]}@${result[3]}`;
     const val = {
-      license: result[5],
-      cq: result[6]
+      license: result[4]||'',
+      cq: result[5]
     };
     depsMap.set(key, val);
   }
@@ -42,6 +42,8 @@ function arrayToDocument(title, depsArray, depToCQ) {
   let document = '### '+ title +'\n\n';
   // table header
   document += '| Packages | License | Resolved CQs |\n| --- | --- | --- |\n';
+  console.log('\n### UNRESOLVED '+ title);
+  let unresolvedQuantity = 0;
   // table body
   depsArray.forEach(item => {
     let license = '';
@@ -55,6 +57,8 @@ function arrayToDocument(title, depsArray, depToCQ) {
       } else if (res.cq) {
         cq = res.cq;
       }
+    } else {
+      console.log(`${++unresolvedQuantity}.'${item}'`);
     }
     document += `| \`${item}\` | ${license} | ${cq} |\n`;
   });
@@ -67,7 +71,7 @@ const PROD_PATH = '.deps/prod.md';
 const DEV_PATH = '.deps/dev.md';
 const ENCODING = 'utf8';
 
-let depsToCQ = new Map();
+let depsToCQ;
 
 // get resolved prod dependencies
 if (existsSync(ALL_DEPENDENCIES)) {
@@ -76,11 +80,11 @@ if (existsSync(ALL_DEPENDENCIES)) {
 
 // prod dependencies
 const prodDepsBuffer = execSync('yarn list --json --prod --depth=0');
-const prodDeps = bufferToArray(JSON.parse(prodDepsBuffer));
+const prodDeps = bufferToArray(JSON.parse(prodDepsBuffer.toString()));
 
 // all dependencies
 const allDepsBuffer = execSync('yarn list --json --depth=0');
-const allDeps = bufferToArray(JSON.parse(allDepsBuffer))
+const allDeps = bufferToArray(JSON.parse(allDepsBuffer.toString()))
 
 // dev dependencies
 const devDeps = allDeps.filter(entry => prodDeps.includes(entry) === false);
