@@ -14,5 +14,9 @@ $ ./build.sh
 
 ## Running
 ```sh
-docker run  --rm -i -t -v ${PWD}/yarn.lock:/home/workspace/yarn.lock -v ${PWD}/package.json:/home/workspace/package.json -v ${PWD}/.deps:/home/workspace/.deps  docker.io/olexii4dockerid/license-tool:next
+docker run --rm -t -v ${PWD}/yarn.lock:/workspace/yarn.lock  \
+       -v ${PWD}/package.json:/workspace/package.json  \
+       -v ${PWD}/.deps:/workspace/.deps  \
+       -v ${PWD}/.deps/tmp/DEPENDENCIES:/workspace/DEPENDENCIES \
+       quay.io/che-incubator/che-dashboard-next:nodejs-license-tool
 ```
