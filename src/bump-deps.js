@@ -10,10 +10,93 @@
  *   Red Hat, Inc. - initial API and implementation
  */
 
-const { execSync } = require('child_process');
 const { writeFileSync, existsSync, readFileSync } = require('fs');
 
+const DEPS_DIR = '.deps';
+const TMP_DIR = `${DEPS_DIR}/tmp`;
+const EXCLUSIONS_DIR = `${DEPS_DIR}/EXCLUDED`;
+
+const DEPENDENCIES = `${TMP_DIR}/DEPENDENCIES`;
+const YARN_DEPS_INFO = `${TMP_DIR}/yarn-deps-info.json`;
+const YARN_ALL_DEPS = `${TMP_DIR}/yarn-all-deps.json`;
+const YARN_PROD_DEPS = `${TMP_DIR}/yarn-prod-deps.json`;
+
+const EXCLUDED_PROD_MD = `${EXCLUSIONS_DIR}/prod.md`;
+const EXCLUDED_DEV_MD = `${EXCLUSIONS_DIR}/dev.md`;
+const PROD_MD = `${TMP_DIR}/prod.md`;
+const DEV_MD = `${TMP_DIR}/dev.md`;
+
+const ENCODING = 'utf8';
+
+const depsToCQ = new Map();
+const allDependencies = new Map();
+
+let globalUnresolvedNumber = 0;
 let logs = '';
+
+const args = process.argv.slice(2);
+let writeToDisk = true;
+if (args[0] === '--check') {
+  writeToDisk = false;
+}
+
+// get all dependencies info using `yarn`
+const allDependenciesInfoStr = readFileSync(YARN_DEPS_INFO).toString();
+const tableStartIndex = allDependenciesInfoStr.indexOf('{"type":"table"');
+if (tableStartIndex !== -1) {
+  const licenses = JSON.parse(allDependenciesInfoStr.substring(tableStartIndex));
+  const { head, body } = licenses.data;
+  body.forEach(libInfo => {
+    allDependencies.set(`${libInfo[head.indexOf('Name')]}@${libInfo[head.indexOf('Version')]}`, {
+      License: libInfo[head.indexOf('License')],
+      URL: libInfo[head.indexOf('URL')] === 'Unknown' ? undefined : libInfo[head.indexOf('URL')]
+    });
+  })
+}
+
+// parse DEPENDENCIES file
+parseDependenciesFile(readFileSync(DEPENDENCIES, ENCODING), depsToCQ);
+
+// list of prod dependencies names
+const yarnProdDepsStr = readFileSync(YARN_PROD_DEPS).toString();
+const yarnProdDepsTree = JSON.parse(yarnProdDepsStr);
+const yarnProdDeps = extractYarnDependencies(yarnProdDepsTree);
+
+// list of all dependencies names
+const yarnAllDepsStr = readFileSync(YARN_ALL_DEPS).toString();
+const yarnAllDepsTree = JSON.parse(yarnAllDepsStr);
+const yarnAllDeps = extractYarnDependencies(yarnAllDepsTree);
+
+// build list of development dependencies
+const yarnDevDeps = yarnAllDeps.filter(entry => yarnProdDeps.includes(entry) === false);
+
+if (existsSync(EXCLUDED_PROD_MD)) {
+  parseExcludedFileData(readFileSync(EXCLUDED_PROD_MD, ENCODING), depsToCQ);
+}
+
+const prodDepsData = arrayToDocument('Production dependencies', yarnProdDeps, depsToCQ, allDependencies);
+if (writeToDisk) {
+  writeFileSync(PROD_MD, prodDepsData, ENCODING);
+}
+
+if (existsSync(EXCLUDED_DEV_MD)) {
+  parseExcludedFileData(readFileSync(EXCLUDED_DEV_MD, ENCODING), depsToCQ);
+}
+
+const devDepsData = arrayToDocument('Development dependencies', yarnDevDeps, depsToCQ, allDependencies);
+if (writeToDisk) {
+  writeFileSync(DEV_MD, devDepsData, ENCODING);
+}
+
+if (logs) {
+  if (writeToDisk) {
+    writeFileSync(`${TMP_DIR}/logs`, logs, ENCODING);
+  }
+  console.log(logs);
+}
+if (globalUnresolvedNumber) {
+  process.exit(1);
+}
 
 // update excluded deps
 function parseExcludedFileData(fileData, depsMap) {
@@ -25,35 +108,52 @@ function parseExcludedFileData(fileData, depsMap) {
 }
 
 // update depsMap
-function parseDependenciesFileData(fileData, depsMap) {
-  const pattern = /^npm\/npmjs\/(-\/)?([^,]+)\/([0-9.]+), ([^,]+)?, approved, (\w+)$/gm;
-
-  let unusedQuantity = 0;
-  let result;
-  if (depsMap.size) {
+function parseDependenciesFile(fileData, dependenciesMap) {
+  let numberUnusedExcludes = 0;
+  if (dependenciesMap.size !== 0) {
     logs += '\n### UNUSED Excludes';
   }
-  while ((result = pattern.exec(fileData)) !== null) {
-    const key = `${result[2]}@${result[3]}`;
-    let cq = result[5]
-    if (depsMap.has(key)) {
-      logs += `\n${++unusedQuantity}. '${key}'`;
-    } else {
-      const cqNum = parseInt(cq.replace('CQ', ''), 10);
-      if (cqNum) {
-        cq = `[CQ${cqNum}](https://dev.eclipse.org/ipzilla/show_bug.cgi?id=${cqNum})`;
+
+  fileData.split(/\r?\n/)
+    .map(line => line.split(/,\s/))
+    .filter(lineData => {
+      const [_cqIdentifier, _license, status, _approvedBy] = lineData;
+      return status === 'approved';
+    })
+    .forEach(lineData => {
+      const [cqIdentifier, _license, _status, approvedBy] = lineData;
+      const [_npm, _npmjs, scope, name, version] = cqIdentifier.split('/');
+
+      const npmIdentifier = scope === '-'
+        ? `${name}@${version}`
+        : `${scope}/${name}@${version}`;
+
+      if (dependenciesMap.has(npmIdentifier)) {
+        logs += `\n${++numberUnusedExcludes}. '${npmIdentifier}'`;
+        return;
       }
-      depsMap.set(key, cq);
-    }
-  }
+
+      const approvalLink = approvedBy === 'clearlydefined'
+        ? approvedBy
+        : cqNumberToLink(approvedBy);
+      dependenciesMap.set(npmIdentifier, approvalLink);
+    });
   logs += '\n';
 }
+function cqNumberToLink(cqNumber) {
+  const number = parseInt(cqNumber.replace('CQ', ''), 10);
+  if (!number) {
+    console.warn(`Warning: failed to parse CQ number from string: "${cqNumber}"`);
+    return cqNumber;
+  }
+  return `[${cqNumber}](https://dev.eclipse.org/ipzilla/show_bug.cgi?id=${number})`;
+}
 
-function bufferToArray(buffer) {
-  if (!buffer || !buffer.data || !buffer.data.trees) {
+function extractYarnDependencies(obj) {
+  if (!obj || !obj.data || !obj.data.trees) {
     return [];
   }
-  return buffer.data.trees.map(entry => entry.name).sort();
+  return obj.data.trees.map(entry => entry.name).sort();
 }
 
 function arrayToDocument(title, depsArray, depToCQ, allLicenses) {
@@ -75,73 +175,11 @@ function arrayToDocument(title, depsArray, depToCQ, allLicenses) {
       cq = depToCQ.get(item);
     } else {
       logs += `\n${++unresolvedQuantity}. '${item}'`;
+      globalUnresolvedNumber++;
     }
     document += `| ${lib} | ${license} | ${cq} |\n`;
   });
   logs += '\n';
 
   return document;
-}
-
-const EXCLUDED_PROD_DEPENDENCIES = '.deps/EXCLUDED/prod.md';
-const EXCLUDED_DEV_DEPENDENCIES = '.deps/EXCLUDED/dev.md';
-const ALL_DEPENDENCIES = './DEPENDENCIES';
-const PROD_PATH = '.deps/prod.md';
-const DEV_PATH = '.deps/dev.md';
-const TMP_DIR_PATH = '.deps/tmp'
-const ENCODING = 'utf8';
-
-const depsToCQ = new Map();
-const allLicenses = new Map();
-
-// licenses buffer
-const allLicensesBuffer = execSync('yarn licenses list --json --depth=0 --no-progress').toString();
-const index = allLicensesBuffer.indexOf('{"type":"table"');
-if (index !== -1) {
-  const licenses = JSON.parse(allLicensesBuffer.substring(index));
-  const { head, body } = licenses.data;
-  body.forEach(libInfo => {
-    allLicenses.set(`${libInfo[head.indexOf('Name')]}@${libInfo[head.indexOf('Version')]}`, {
-      License: libInfo[head.indexOf('License')],
-      URL: libInfo[head.indexOf('URL')] === 'Unknown' ? undefined : libInfo[head.indexOf('URL')]
-    });
-  })
-}
-
-let path = ALL_DEPENDENCIES;
-if (!existsSync(ALL_DEPENDENCIES)) {
-  path = path.replace('./', '.deps/tmp/');
-}
-if (existsSync(path)) {
-  parseDependenciesFileData(readFileSync(path, ENCODING), depsToCQ);
-}
-
-// prod dependencies
-const prodDepsBuffer = execSync('yarn list --json --prod --depth=0 --no-progress');
-const prodDeps = bufferToArray(JSON.parse(prodDepsBuffer.toString()));
-
-// all dependencies
-const allDepsBuffer = execSync('yarn list --json --depth=0 --no-progress');
-const allDeps = bufferToArray(JSON.parse(allDepsBuffer.toString()))
-
-// dev dependencies
-const devDeps = allDeps.filter(entry => prodDeps.includes(entry) === false);
-
-if (existsSync(EXCLUDED_PROD_DEPENDENCIES)) {
-  parseExcludedFileData(readFileSync(EXCLUDED_PROD_DEPENDENCIES, ENCODING), depsToCQ);
-}
-
-writeFileSync(PROD_PATH, arrayToDocument('Production dependencies', prodDeps, depsToCQ, allLicenses), ENCODING);
-
-if (existsSync(EXCLUDED_DEV_DEPENDENCIES)) {
-  parseExcludedFileData(readFileSync(EXCLUDED_DEV_DEPENDENCIES, ENCODING), depsToCQ);
-}
-
-writeFileSync(DEV_PATH, arrayToDocument('Development dependencies', devDeps, depsToCQ, allLicenses), ENCODING);
-
-if (logs) {
-  if (existsSync(TMP_DIR_PATH)) {
-    writeFileSync(`${TMP_DIR_PATH}/logs`, logs, ENCODING);
-  }
-  console.log(logs);
 }
