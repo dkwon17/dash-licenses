@@ -10,7 +10,7 @@
 
 FROM docker.io/openjdk:15-jdk
 
-RUN microdnf install -y git
+RUN microdnf install -y git rsync
 
 ARG MAVEN_VERSION=3.8.1
 ARG BASE_URL=https://apache.osuosl.org/maven/maven-3/${MAVEN_VERSION}/binaries
